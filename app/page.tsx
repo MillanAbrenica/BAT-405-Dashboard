@@ -2,23 +2,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
-  Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, PolarAngleAxis, PolarGrid,
-  PolarRadiusAxis, Radar, RadarChart, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis,
+  Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis,
 } from "recharts";
 import {
-  ALL, byYearLevel, COLLEGES, collegeOf, compare, courses, CourseAgg, deptsIn, DIMENSIONS, Filters, gradeDist, heat,
+  ALL, byYearLevel, COLLEGES, collegeOf, compare, courses, CourseAgg, deptsIn, DIMENSIONS, Filters, heat,
   previous, SEMS, summarize, TERMS, themes, THRESH, trend, YEARS, YLS,
 } from "@/lib/data";
 
 /* Colors are CSS variables so charts follow light/dark mode. */
 const C = {
   ink: "var(--ink)", ink2: "var(--ink-2)", mute: "var(--mute)", sheet: "var(--sheet)", grid: "var(--grid)", axis: "var(--axis)",
-  brand: "var(--brand)", brand2: "var(--brand-2)", brand3: "var(--brand-3)",
-  bad: "var(--bad)", badInk: "var(--bad-ink)", warn: "var(--warn)", good: "var(--good)", goodInk: "var(--good-ink)",
+  brand: "var(--brand)", bad: "var(--bad)", badInk: "var(--bad-ink)", warn: "var(--warn)", good: "var(--good)", goodInk: "var(--good-ink)",
 };
-/* Fixed categorical slots: a college (or a department's position in its college) always keeps its color. */
-const SLOTS = ["var(--s1)", "var(--s2)", "var(--s3)"];
-const CCOL: Record<string, string> = { CCS: SLOTS[0], CBA: SLOTS[1], CED: SLOTS[2] };
+/* Fixed categorical slots: a college always keeps its color. */
+const CCOL: Record<string, string> = { CCS: "var(--s1)", CBA: "var(--s2)", CED: "var(--s3)" };
 const tick = { fontSize: 11.5, fill: C.mute };
 const AX = { tick, tickLine: false, axisLine: { stroke: C.axis } };
 const AY = { tick, tickLine: false, axisLine: false };
@@ -37,10 +34,27 @@ type Status = "good" | "warn" | "bad";
 const badge: Record<Status, string> = { good: "On target", warn: "Watch", bad: "Intervene" };
 const STATUS_OPTS: [string, string][] = [["bad", "Intervene"], ["warn", "Watch"], ["good", "On target"]];
 const LEVEL = { bad: "Intervene", warn: "Watch", info: "Note" } as const;
+
+/* One definition per indicator, shared by the KPI strip and the comparison table so the thresholds can't drift apart. */
+type KpiKey = "pass" | "atRisk" | "fill" | "sete" | "response";
+type KpiDef = { k: KpiKey; title: string; short: string; unit: string; target: string; ok: number; bad: number; higher: boolean; range: [number, number]; note: string };
+const KPIS: KpiDef[] = [
+  { k: "pass", title: "Pass rate", short: "Pass", unit: "%", target: "≥ 85%", ok: THRESH.pass, bad: 80, higher: true, range: [60, 100], note: "From Portal grades" },
+  { k: "atRisk", title: "At-risk students", short: "At-risk", unit: "%", target: "≤ 15%", ok: THRESH.atRisk, bad: 20, higher: false, range: [0, 30], note: "Failing or low grades in the Portal" },
+  { k: "fill", title: "Class fill rate", short: "Fill", unit: "%", target: "≥ 80%", ok: THRESH.fill, bad: 70, higher: true, range: [50, 100], note: "Enrollment against section capacity" },
+  { k: "sete", title: "Average SETE score", short: "SETE", unit: "/5", target: "≥ 4.0", ok: 4, bad: THRESH.sete, higher: true, range: [3, 5], note: "Weighted by enrollment" },
+  { k: "response", title: "SETE response rate", short: "Response", unit: "%", target: "≥ 60%", ok: THRESH.response, bad: 50, higher: true, range: [0, 100], note: "How far SETE scores can be trusted" },
+];
+const statusOf = (def: KpiDef, v: number): Status =>
+  def.higher ? (v >= def.ok ? "good" : v >= def.bad ? "warn" : "bad") : (v <= def.ok ? "good" : v <= def.bad ? "warn" : "bad");
+const decimals = (def: KpiDef) => (def.unit === "/5" ? 2 : 1);
+
 const idx = (n: number) => ({ ["--i" as string]: n }) as React.CSSProperties;
 // Recharts passes the clicked datum differently per chart type; read the course code defensively.
 const codeOf = (e: unknown) => ((e as { payload?: { code?: string }; code?: string })?.payload?.code ?? (e as { code?: string })?.code) as string | undefined;
 const reducedMotion = () => typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+// Enter / Space activate clickable rows, matching a button.
+const onActivate = (fn: () => void) => (e: React.KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(); } };
 
 function useMotionOK() {
   const [ok, setOk] = useState(true);
@@ -164,39 +178,38 @@ function Select({ label, value, onChange, options }: { label: string; value: str
   );
 }
 
-type Scale = { min: number; max: number; warn: number; target: number };
 /* Bullet meter: where the value sits against the watch / intervene zones and the target tick. */
-function Meter({ value, min, max, warn, target, higher }: Scale & { value: number; higher: boolean }) {
+function Meter({ def, value }: { def: KpiDef; value: number }) {
+  const [min, max] = def.range;
   const p = (v: number) => Math.max(0, Math.min(100, ((v - min) / (max - min)) * 100));
   return (
     <div className="meter" aria-hidden="true">
-      {higher ? (
-        <><i className="z-bad" style={{ left: 0, width: `${p(warn)}%` }} /><i className="z-warn" style={{ left: `${p(warn)}%`, width: `${p(target) - p(warn)}%` }} /></>
+      {def.higher ? (
+        <><i className="z-bad" style={{ left: 0, width: `${p(def.bad)}%` }} /><i className="z-warn" style={{ left: `${p(def.bad)}%`, width: `${p(def.ok) - p(def.bad)}%` }} /></>
       ) : (
-        <><i className="z-warn" style={{ left: `${p(target)}%`, width: `${p(warn) - p(target)}%` }} /><i className="z-bad" style={{ left: `${p(warn)}%`, width: `${100 - p(warn)}%` }} /></>
+        <><i className="z-warn" style={{ left: `${p(def.ok)}%`, width: `${p(def.bad) - p(def.ok)}%` }} /><i className="z-bad" style={{ left: `${p(def.bad)}%`, width: `${100 - p(def.bad)}%` }} /></>
       )}
       <b style={{ transform: `scaleX(${p(value) / 100})` }} />
-      <em style={{ left: `${p(target)}%` }} />
+      <em style={{ left: `${p(def.ok)}%` }} />
     </div>
   );
 }
 
-function Kpi({ i, title, value, unit, target, status, delta, good, note, scale }: {
-  i: number; title: string; value: number; unit: string; target: string; status: Status; delta: number | null; good: "up" | "down"; note: string; scale: Scale;
-}) {
-  const dec = unit === "/5" ? 2 : 1;
+function Kpi({ i, def, value, delta }: { i: number; def: KpiDef; value: number; delta: number | null }) {
+  const status = statusOf(def, value);
+  const dec = decimals(def);
   const shown = useCountUp(value, dec);
-  const improved = delta === null ? null : good === "up" ? delta >= 0 : delta <= 0;
+  const improved = delta === null ? null : def.higher ? delta >= 0 : delta <= 0;
   return (
     <div className={`kpi ${status}`} style={idx(i)}>
-      <h3>{title}</h3>
-      <div className="kpi-v"><span>{shown}<small>{unit}</small></span><span className="flag">{badge[status]}</span></div>
-      <Meter value={value} {...scale} higher={good === "up"} />
+      <h3>{def.title}</h3>
+      <div className="kpi-v"><span>{shown}<small>{def.unit}</small></span><span className="flag">{badge[status]}</span></div>
+      <Meter def={def} value={value} />
       <div className="kpi-f">
-        <span>Target {target}</span>
+        <span>Target {def.target}</span>
         {delta !== null && <b className={improved ? "up" : "dn"}>{delta >= 0 ? "▲" : "▼"} {Math.abs(delta).toFixed(dec)} <span>vs previous</span></b>}
       </div>
-      <p className="kpi-n">{note}</p>
+      <p className="kpi-n">{def.note}</p>
     </div>
   );
 }
@@ -206,40 +219,27 @@ function Fact({ label, value, decimals = 0, suffix = "" }: { label: string; valu
   return <div className="fact"><b>{decimals === 0 ? Number(shown).toLocaleString() : shown}{suffix}</b><span>{label}</span></div>;
 }
 
-function Card({ i, title, sub, cls = "c4", right, children }: { i: number; title: string; sub?: string; cls?: string; right?: React.ReactNode; children: React.ReactNode }) {
+function Card({ i, id, title, sub, cls = "c4", right, children }: { i: number; id?: string; title: string; sub?: string; cls?: string; right?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section className={`card ${cls}`} style={idx(i)}>
+    <section id={id} className={`card ${cls}`} style={idx(i)}>
       <header className="card-h"><div><h3>{title}</h3>{sub && <p>{sub}</p>}</div>{right}</header>
       {children}
     </section>
   );
 }
 
-/* Lollipop marks for axes that don't start at zero: a bar's length would exaggerate the gaps, a dot doesn't.
-   Each mark gets a transparent hit area the size of its whole band so it's easy to click. */
+/* Lollipop marks for axes that don't start at zero: a bar's length would exaggerate the gaps, a dot doesn't. */
 type ShapeProps = { x?: number; y?: number; width?: number; height?: number; fill?: string };
 function LolliH({ x = 0, y = 0, width = 0, height = 0, fill }: ShapeProps) {
   const cy = y + height / 2, end = x + Math.max(0, width);
   return (
     <g>
-      <rect x={x} y={y} width={Math.max(0, width) + 10} height={height} fill="transparent" />
       <line x1={x} x2={end} y1={cy} y2={cy} stroke={fill} strokeWidth={2} strokeLinecap="round" />
       <circle cx={end} cy={cy} r={5.5} fill={fill} stroke="var(--sheet)" strokeWidth={2} />
     </g>
   );
 }
-function LolliV({ x = 0, y = 0, width = 0, height = 0, fill }: ShapeProps) {
-  const cx = x + width / 2, base = y + Math.max(0, height);
-  return (
-    <g>
-      <rect x={x} y={y - 10} width={width} height={Math.max(0, height) + 10} fill="transparent" />
-      <line x1={cx} x2={cx} y1={base} y2={y} stroke={fill} strokeWidth={2} strokeLinecap="round" />
-      <circle cx={cx} cy={y} r={6} fill={fill} stroke="var(--sheet)" strokeWidth={2} />
-    </g>
-  );
-}
 const lolliH = (p: unknown) => <LolliH {...(p as ShapeProps)} />;
-const lolliV = (p: unknown) => <LolliV {...(p as ShapeProps)} />;
 
 function CourseTip({ active, payload }: { active?: boolean; payload?: { payload: CourseAgg }[] }) {
   const c = active ? payload?.[0]?.payload : undefined;
@@ -252,6 +252,7 @@ const heatBg = (p: number) => (p < 80
   : p < 85 ? "color-mix(in srgb, var(--warn) 26%, var(--sheet))"
   : `color-mix(in srgb, var(--brand) ${6 + Math.round(24 * Math.min(1, (p - 85) / 10))}%, var(--sheet))`);
 type SortKey = "code" | "dept" | "yl" | "enrolled" | "pass" | "sete" | "response";
+type Group = { id: string } & Record<KpiKey, number>;
 
 export default function Dashboard() {
   const [phase, setPhase] = useState<"loading" | "leaving" | "done">("loading");
@@ -260,7 +261,8 @@ export default function Dashboard() {
   const [status, setStatus] = useState("All");
   const [reliable, setReliable] = useState(false);
   const [metric, setMetric] = useState("overall");
-  const [trendKind, setTrendKind] = useState<"sete" | "pass" | "atRisk">("sete");
+  const [trendKind, setTrendKind] = useState<"sete" | "pass" | "atRisk" | "enrolled">("sete");
+  const [cmpBy, setCmpBy] = useState<"group" | "yl">("group");
   const [pick, setPick] = useState<string | null>(null);
   const [sort, setSort] = useState<{ k: SortKey; asc: boolean }>({ k: "pass", asc: true });
   const [q, setQ] = useState("");
@@ -290,21 +292,14 @@ export default function Dashboard() {
   const hm = useMemo(() => heat(f), [f]);
   const yl = useMemo(() => byYearLevel(f), [f]);
   const thm = useMemo(() => themes(f), [f]);
-  const grades = useMemo(() => gradeDist(s.pass), [s.pass]);
 
   const courseStatus = (c: CourseAgg): Status => (c.pass < 80 ? "bad" : c.pass < THRESH.pass || (c.sete < THRESH.sete && c.response >= THRESH.response) ? "warn" : "good");
   const cs = useMemo(() => csAll.filter((c) => (status === "All" || courseStatus(c) === status) && (!reliable || c.response >= THRESH.response)), [csAll, status, reliable]);
-  const lowest = useMemo(() => [...cs].sort((a, b) => a.pass - b.pass).slice(0, 8), [cs]);
   const dimData = DIMENSIONS.map((d) => ({ dim: d, score: s.dims[d] }));
-  const d = (k: "pass" | "atRisk" | "sete" | "response" | "fill") => (prev ? s[k] - prev[k] : null);
-  const st = (v: number, ok: number, bad: number, higher = true): Status =>
-    higher ? (v >= ok ? "good" : v >= bad ? "warn" : "bad") : (v <= ok ? "good" : v <= bad ? "warn" : "bad");
 
+  // Course-level only: program-wide breaches are already flagged on the KPI strip.
   const alerts = useMemo(() => {
     const a: { level: "bad" | "warn" | "info"; text: string }[] = [];
-    if (s.pass < THRESH.pass) a.push({ level: s.pass < 80 ? "bad" : "warn", text: `Overall pass rate is ${s.pass}%, below the ${THRESH.pass}% threshold.` });
-    if (s.atRisk > THRESH.atRisk) a.push({ level: "bad", text: `${s.atRisk}% of students are at risk (limit ${THRESH.atRisk}%). Start advising and tutoring.` });
-    if (s.response < THRESH.response) a.push({ level: "info", text: `Only ${s.response}% of students answered the SETE (minimum ${THRESH.response}%). Read the scores with caution.` });
     [...csAll].sort((x, y) => x.pass - y.pass).forEach((c) => {
       if (c.pass < 80) a.push({ level: "bad", text: `${c.code} ${c.title} (${c.dept}) has a ${c.pass}% pass rate. Review course delivery and assessment.` });
       if (c.sete < THRESH.sete && c.response >= THRESH.response) a.push({ level: "warn", text: `${c.code} ${c.title} scored ${c.sete}/5 on SETE with ${c.response}% response. Offer faculty development support.` });
@@ -312,7 +307,7 @@ export default function Dashboard() {
     });
     const o = { bad: 0, warn: 1, info: 2 };
     return a.sort((x, y) => o[x.level] - o[y.level]);
-  }, [s, csAll]);
+  }, [csAll]);
   const nAlerts = alerts.filter((a) => a.level !== "info").length;
 
   const rows = useMemo(() => {
@@ -330,6 +325,15 @@ export default function Dashboard() {
       </button>
     </th>
   );
+
+  // Comparison table: colleges (or the chosen college's departments), or year levels.
+  const groups: Group[] = cmpBy === "yl" ? yl.map((x) => ({ ...x, id: x.yl })) : cmp;
+  const groupOn = (id: string) => (cmpBy === "yl" ? f.yl === id : f.dept === id);
+  const chooseGroup = (id: string) => {
+    if (cmpBy === "yl") set({ yl: f.yl === id ? "All" : id });
+    else if (f.college === "All") set({ college: id });
+    else set({ dept: f.dept === id ? "All" : id });
+  };
 
   const sel = cs.find((c) => c.code === pick) ?? csAll.find((c) => c.code === pick);
   const scopeParts = [
@@ -354,31 +358,28 @@ export default function Dashboard() {
   const lowSete = csAll.filter((c) => c.sete < THRESH.sete && c.response >= THRESH.response);
   const lowYl = [...yl].sort((a, b) => a.pass - b.pass)[0];
   const actions = [
-    s.pass < THRESH.pass && "Schedule a curriculum review meeting for courses under the 85% pass-rate threshold.",
-    worstCourse && worstCourse.pass < THRESH.pass && `Review the syllabus, pacing and assessments of ${worstCourse.code} ${worstCourse.title} (${worstCourse.dept}), which has the lowest pass rate at ${worstCourse.pass}%.`,
+    worstCourse && worstCourse.pass < THRESH.pass && `Review courses under the ${THRESH.pass}% pass-rate threshold, starting with ${worstCourse.code} ${worstCourse.title} (${worstCourse.dept}) at ${worstCourse.pass}%: syllabus, pacing and assessments.`,
     s.atRisk > THRESH.atRisk && "Launch peer tutoring and early advising for students flagged as at risk.",
     lowYl && lowYl.pass < THRESH.pass && `Add bridging, orientation and academic support for ${lowYl.yl} students (pass rate ${lowYl.pass}%).`,
     s.fill < THRESH.fill && "Review section offerings and class schedules to improve the fill rate; consider merging low-enrollment sections.",
     s.retention < 90 && `Strengthen retention programs (retention is ${s.retention}%): scholarship information, counseling and early-warning follow-ups.`,
     s.response < THRESH.response && "Run a SETE response drive (class reminders, protected evaluation time) so results are reliable.",
-    weakDim && weakDim.score < 4 && `Offer faculty training on “${weakDim.dim}”, the lowest-rated SETE dimension (${weakDim.score}/5).`,
-    lowSete.length > 0 && `Provide supportive faculty development for ${lowSete.map((c) => c.code).slice(0, 3).join(", ")}${lowSete.length > 3 ? ` and ${lowSete.length - 3} more` : ""} (low SETE with reliable response).`,
-    `Share the top SETE theme, “${thm[0].theme}”, in a faculty development workshop.`,
-    "Pair courses with low SETE with peer mentoring and classroom observation (supportive, not punitive).",
-    "Triangulate SETE with grades, peer observation and syllabus review before drawing conclusions about teaching effectiveness.",
+    lowSete.length > 0 && `Pair ${lowSete.map((c) => c.code).slice(0, 3).join(", ")}${lowSete.length > 3 ? ` and ${lowSete.length - 3} more` : ""} with peer mentoring and classroom observation (low SETE with reliable response). Keep it supportive, not punitive.`,
+    `Run a faculty development workshop on ${weakDim.score < 4 ? `“${weakDim.dim}”, the lowest-rated SETE dimension (${weakDim.score}/5), and ` : ""}the most common student comment, “${thm[0].theme}”.`,
     "Re-check these indicators next term to see whether the interventions worked, and report the results to the dean.",
   ].filter(Boolean) as string[];
-  const trendCfg = {
+  const trendCfg: { key: string; label: string; dom: [number | string, number | string] } = {
     sete: { key: metric, label: metric === "overall" ? "Overall SETE" : metric, dom: [3, 5] as [number, number] },
     pass: { key: "pass", label: "Pass rate %", dom: [70, 100] as [number, number] },
     atRisk: { key: "atRisk", label: "At-risk %", dom: [0, 30] as [number, number] },
+    enrolled: { key: "enrolled", label: "Students enrolled", dom: ["auto", "auto"] as [string, string] },
   }[trendKind];
   const dot = (color: string) => function Dot(p: { cx?: number; cy?: number; payload?: { active: boolean } }) {
     const on = p.payload?.active;
     return <circle key={`${p.cx}-${p.cy}`} cx={p.cx} cy={p.cy} r={on ? 5 : 3.5} fill={on ? color : "var(--sheet)"} stroke={on ? "var(--sheet)" : color} strokeWidth={on ? 2 : 1.5} />;
   };
-  const passFill = (v: number) => (v >= THRESH.pass ? C.brand : v >= 80 ? C.warn : C.bad);
   const scopeName = f.dept !== "All" ? f.dept : f.college !== "All" ? f.college : "All colleges";
+  const toAlerts = () => document.getElementById("alerts")?.scrollIntoView({ behavior: motionOK ? "smooth" : "auto", block: "start" });
 
   // indices drive the load stagger: KPIs 0–4, facts 5, then panels in reading order
   let n = 6;
@@ -446,7 +447,7 @@ export default function Dashboard() {
                 <p>{scope}</p>
               </div>
               <div className="top-r">
-                <span className={`pill ${nAlerts ? "" : "ok"}`}>{nAlerts ? <><b>{nAlerts}</b> active {nAlerts === 1 ? "alert" : "alerts"}</> : "No active alerts"}</span>
+                <button className={`pill ${nAlerts ? "" : "ok"}`} onClick={toAlerts}>{nAlerts ? <><b>{nAlerts}</b> course {nAlerts === 1 ? "alert" : "alerts"}</> : "No course alerts"}</button>
                 <ThemeToggle />
               </div>
             </header>
@@ -459,17 +460,11 @@ export default function Dashboard() {
 
             <section className="report" aria-label="Key indicators">
               <div className="kpis">
-                <Kpi i={0} title="Pass rate" value={s.pass} unit="%" target="≥ 85%" status={st(s.pass, 85, 80)} delta={d("pass")} good="up" note="From Portal grades" scale={{ min: 60, max: 100, warn: 80, target: 85 }} />
-                <Kpi i={1} title="At-risk students" value={s.atRisk} unit="%" target="≤ 15%" status={st(s.atRisk, 15, 20, false)} delta={d("atRisk")} good="down" note="Failing or low grades in the Portal" scale={{ min: 0, max: 30, warn: 20, target: 15 }} />
-                <Kpi i={2} title="Class fill rate" value={s.fill} unit="%" target="≥ 80%" status={st(s.fill, 80, 70)} delta={d("fill")} good="up" note="Enrollment against section capacity" scale={{ min: 50, max: 100, warn: 70, target: 80 }} />
-                <Kpi i={3} title="Average SETE score" value={s.sete} unit="/5" target="≥ 4.0" status={st(s.sete, 4.0, 3.5)} delta={d("sete")} good="up" note="Weighted by enrollment" scale={{ min: 3, max: 5, warn: 3.5, target: 4 }} />
-                <Kpi i={4} title="SETE response rate" value={s.response} unit="%" target="≥ 60%" status={st(s.response, 60, 50)} delta={d("response")} good="up" note="How far SETE scores can be trusted" scale={{ min: 0, max: 100, warn: 50, target: 60 }} />
+                {KPIS.map((def, k) => <Kpi key={def.k} i={k} def={def} value={s[def.k]} delta={prev ? s[def.k] - prev[def.k] : null} />)}
               </div>
               <div className="facts" style={idx(5)}>
                 <Fact label="students enrolled" value={s.enrolled} />
                 <Fact label="faculty members" value={s.faculty} />
-                <Fact label={`${s.nCourses === 1 ? "course" : "courses"} monitored`} value={s.nCourses} />
-                <Fact label={f.dept !== "All" ? "department in scope" : "departments in scope"} value={f.dept !== "All" ? 1 : deptsIn(f.college).length} />
                 <Fact label="retention rate" value={s.retention} decimals={1} suffix="%" />
                 <Fact label="average GWA (lower is better)" value={s.gwa} decimals={2} />
               </div>
@@ -480,7 +475,7 @@ export default function Dashboard() {
                 right={
                   <div className="ctrl">
                     <div className="seg" role="group" aria-label="Trend measure">
-                      {([["sete", "SETE"], ["pass", "Pass rate"], ["atRisk", "At-risk"]] as const).map(([k, l]) => (
+                      {([["sete", "SETE"], ["pass", "Pass rate"], ["atRisk", "At-risk"], ["enrolled", "Enrollment"]] as const).map(([k, l]) => (
                         <button key={k} className={trendKind === k ? "on" : ""} aria-pressed={trendKind === k} onClick={() => setTrendKind(k)}>{l}</button>
                       ))}
                     </div>
@@ -493,11 +488,11 @@ export default function Dashboard() {
                   </div>}>
                 <div className="chart">
                   <ResponsiveContainer debounce={150}>
-                    <LineChart data={tr} margin={{ top: 8, right: 16, left: -10, bottom: 0 }}>
+                    <LineChart data={tr} margin={{ top: 8, right: 16, left: -6, bottom: 0 }}>
                       <CartesianGrid stroke={C.grid} vertical={false} />
                       {/* right padding keeps the last point clear of the target / warning labels */}
-                      <XAxis dataKey="term" {...AX} padding={{ left: 8, right: 64 }} />
-                      <YAxis domain={trendCfg.dom} {...AY} />
+                      <XAxis dataKey="term" {...AX} padding={{ left: 8, right: trendKind === "enrolled" ? 8 : 64 }} />
+                      <YAxis domain={trendCfg.dom} {...AY} tickFormatter={(v: number) => v.toLocaleString()} />
                       <Tooltip {...TT} cursor={lineCursor} />
                       {trendKind === "sete" && <ReferenceLine y={4} stroke={C.good} strokeDasharray="4 4" label={refLabel("Target 4.0", C.goodInk, "insideTopRight")} />}
                       {trendKind === "sete" && <ReferenceLine y={THRESH.sete} stroke={C.bad} strokeDasharray="4 4" label={refLabel("Warning 3.5", C.badInk, "insideBottomRight")} />}
@@ -510,12 +505,26 @@ export default function Dashboard() {
                 <p className="note">Filled points are the terms in your year and semester filter.</p>
               </Card>
 
-              <Card i={nx()} cls="c4 wide-md alerts" title="Alerts and concerns" right={<span className="count">{alerts.length}</span>}>
-                <div className="list">
-                  <ul>
-                    {alerts.length === 0 && <li className="info"><b>All clear</b>No threshold breaches for this selection.</li>}
-                    {alerts.map((a, j) => <li key={j} className={a.level}><b>{LEVEL[a.level]}</b>{a.text}</li>)}
-                  </ul>
+              <Card i={nx()} cls="c4 wide-md" title="Compare groups" sub="Rates in %, SETE out of 5. Select a row to filter."
+                right={
+                  <div className="seg" role="group" aria-label="Compare by">
+                    {([["group", f.college === "All" ? "College" : "Department"], ["yl", "Year level"]] as const).map(([k, l]) => (
+                      <button key={k} className={cmpBy === k ? "on" : ""} aria-pressed={cmpBy === k} onClick={() => setCmpBy(k)}>{l}</button>
+                    ))}
+                  </div>}>
+                <div className="score">
+                  <table>
+                    <thead><tr><th>{cmpBy === "yl" ? "Year level" : f.college === "All" ? "College" : "Department"}</th>{KPIS.map((def) => <th key={def.k} className="num">{def.short}</th>)}</tr></thead>
+                    <tbody>
+                      {groups.map((g) => (
+                        <tr key={g.id} className={groupOn(g.id) ? "sel-row" : ""} tabIndex={0} aria-selected={groupOn(g.id)}
+                          onClick={() => chooseGroup(g.id)} onKeyDown={onActivate(() => chooseGroup(g.id))}>
+                          <td>{CCOL[g.id] && <i className="sw" style={{ background: CCOL[g.id] }} />}{g.id}</td>
+                          {KPIS.map((def) => <td key={def.k} className={`num v-${statusOf(def, g[def.k])}`}>{g[def.k].toFixed(decimals(def))}</td>)}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </Card>
 
@@ -536,86 +545,24 @@ export default function Dashboard() {
                 </div>
               </Card>
 
-              <Card i={nx()} cls="c4 wide-md" title="Lowest pass-rate courses" sub="Select a course for details">
-                {lowest.length === 0 ? noCourses : (
-                  <>
-                    <div className="chart">
-                      <ResponsiveContainer debounce={150}>
-                        <BarChart data={lowest} layout="vertical" margin={{ top: 0, right: 16, left: 0, bottom: 0 }}>
-                          <CartesianGrid stroke={C.grid} horizontal={false} />
-                          <XAxis type="number" domain={[50, 100]} ticks={[50, 60, 70, 80, 90, 100]} {...AX} tickFormatter={pct} />
-                          <YAxis type="category" dataKey="code" width={56} {...AY} tick={{ fontSize: 12, fill: C.ink2 }} />
-                          <Tooltip {...TT} content={<CourseTip />} />
-                          <ReferenceLine x={THRESH.pass} stroke={C.bad} strokeDasharray="4 4" />
-                          <Bar dataKey="pass" name="Pass %" shape={lolliH} cursor="pointer" {...A} onClick={(e) => setPick(codeOf(e) ?? null)}>
-                            {lowest.map((x) => <Cell key={x.code} fill={x.code === pick ? C.ink : passFill(x.pass)} />)}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <div className="detail">
-                      {sel ? <><b>{sel.code} {sel.title}</b> ({sel.dept}): {sel.enrolled} enrolled, pass rate {sel.pass}%, SETE {sel.sete}/5 from {sel.response}% of students{sel.response < THRESH.response && ", low response"}</> : "Select a course in this chart or the table to see its details."}
-                    </div>
-                  </>
-                )}
-              </Card>
-
-              <Card i={nx()} title="Pass rate by year level" sub="Select a year level to filter">
-                <div className="chart">
-                  <ResponsiveContainer debounce={150}>
-                    <BarChart data={yl} margin={{ top: 12, right: 8, left: -14, bottom: 0 }}>
-                      <CartesianGrid stroke={C.grid} vertical={false} />
-                      <XAxis dataKey="yl" {...AX} />
-                      <YAxis domain={[60, 100]} {...AY} tickFormatter={pct} />
-                      <Tooltip {...TT} />
-                      <ReferenceLine y={THRESH.pass} stroke={C.bad} strokeDasharray="4 4" />
-                      <Bar dataKey="pass" name="Pass %" shape={lolliV} cursor="pointer" {...A} onClick={(e) => { const y = (e as unknown as { payload?: { yl: string } })?.payload?.yl; if (y) set({ yl: f.yl === y ? "All" : y }); }}>
-                        {yl.map((x) => <Cell key={x.yl} fill={passFill(x.pass)} fillOpacity={f.yl === "All" || f.yl === x.yl ? 1 : 0.3} />)}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </Card>
-
-              <Card i={nx()} title="Grade distribution" sub="Share of students in each band">
-                <div className="chart">
-                  <ResponsiveContainer debounce={150}>
-                    <BarChart data={grades} layout="vertical" margin={{ top: 0, right: 16, left: 0, bottom: 0 }}>
-                      <CartesianGrid stroke={C.grid} horizontal={false} />
-                      <XAxis type="number" {...AX} tickFormatter={pct} />
-                      <YAxis type="category" dataKey="band" width={128} {...AY} tick={{ fontSize: 12, fill: C.ink2 }} />
-                      <Tooltip {...TT} />
-                      <Bar dataKey="pct" name="Students %" radius={[0, 4, 4, 0]} barSize={16} {...A}>
-                        {grades.map((g, k) => <Cell key={g.band} fill={[C.brand3, C.brand, C.brand2, C.warn, C.bad][k]} />)}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </Card>
-
-              <Card i={nx()} cls="c4 wide-md" title="Enrollment trend" sub="Students per term">
-                <div className="chart">
-                  <ResponsiveContainer debounce={150}>
-                    <LineChart data={tr} margin={{ top: 8, right: 16, left: -2, bottom: 0 }}>
-                      <CartesianGrid stroke={C.grid} vertical={false} />
-                      <XAxis dataKey="term" {...AX} />
-                      <YAxis {...AY} domain={["auto", "auto"]} tickFormatter={(v: number) => v.toLocaleString()} />
-                      <Tooltip {...TT} cursor={lineCursor} />
-                      <Line type="monotone" dataKey="enrolled" name="Enrolled" stroke={C.brand} strokeWidth={2} dot={{ r: 3, fill: "var(--sheet)", strokeWidth: 1.5 }} activeDot={{ r: 5, stroke: "var(--sheet)", strokeWidth: 2 }} {...A} />
-                    </LineChart>
-                  </ResponsiveContainer>
+              <Card i={nx()} id="alerts" cls="c4 wide-md alerts" title="Alerts and concerns" sub="Courses under 80% pass rate or 3.5 SETE" right={<span className="count">{alerts.length}</span>}>
+                <div className="list">
+                  <ul>
+                    {alerts.length === 0 && <li className="info"><b>All clear</b>No course is below a threshold for this selection.</li>}
+                    {alerts.map((a, j) => <li key={j} className={a.level}><b>{LEVEL[a.level]}</b>{a.text}</li>)}
+                  </ul>
                 </div>
               </Card>
 
               <h2 className="sec" style={idx(nx())}>Teaching evaluation (SETE)</h2>
 
-              <Card i={nx()} title="SETE by evaluation dimension" sub="Average score out of 5">
+              <Card i={nx()} cls="c6" title="SETE by evaluation dimension" sub="Average score out of 5">
                 <div className="chart">
                   <ResponsiveContainer debounce={150}>
                     <BarChart data={dimData} layout="vertical" margin={{ top: 0, right: 18, left: 0, bottom: 0 }}>
                       <CartesianGrid stroke={C.grid} horizontal={false} />
                       <XAxis type="number" domain={[3, 5]} {...AX} />
-                      <YAxis type="category" dataKey="dim" width={118} {...AY} tick={{ fontSize: 12, fill: C.ink2 }} />
+                      <YAxis type="category" dataKey="dim" width={140} {...AY} tick={{ fontSize: 12, fill: C.ink2 }} />
                       <Tooltip {...TT} />
                       <ReferenceLine x={4} stroke={C.good} strokeDasharray="4 4" />
                       <Bar dataKey="score" name="Score" shape={lolliH} {...A}>
@@ -626,24 +573,7 @@ export default function Dashboard() {
                 </div>
               </Card>
 
-              <Card i={nx()} title="SETE response rate" sub="Under 60% and scores aren't reliable">
-                <div className="chart">
-                  <ResponsiveContainer debounce={150}>
-                    <BarChart data={cmp} margin={{ top: 8, right: 8, left: -14, bottom: 0 }}>
-                      <CartesianGrid stroke={C.grid} vertical={false} />
-                      <XAxis dataKey="id" {...AX} />
-                      <YAxis domain={[0, 100]} {...AY} tickFormatter={pct} />
-                      <Tooltip {...TT} />
-                      <ReferenceLine y={THRESH.response} stroke={C.bad} strokeDasharray="4 4" />
-                      <Bar dataKey="response" name="Response %" radius={[4, 4, 0, 0]} maxBarSize={44} {...A}>
-                        {cmp.map((x) => <Cell key={x.id} fill={x.response >= THRESH.response ? C.brand : C.warn} />)}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </Card>
-
-              <Card i={nx()} cls="c4 wide-md" title="Recurring improvement themes" sub="Mentions in SETE comments">
+              <Card i={nx()} cls="c6" title="Recurring improvement themes" sub="Mentions in SETE comments">
                 <ul className="bars">
                   {thm.map((t) => (
                     <li key={t.theme}>
@@ -654,10 +584,12 @@ export default function Dashboard() {
                 </ul>
               </Card>
 
-              <Card i={nx()} cls="c8" title="Pass rate vs SETE" sub="Each dot is a course, sized by enrollment. Select one for details.">
+              <h2 className="sec" style={idx(nx())}>Courses</h2>
+
+              <Card i={nx()} cls="c12" title="Pass rate vs SETE" sub="Each dot is a course, sized by enrollment. Select one for details.">
                 {cs.length === 0 ? noCourses : (
                   <>
-                    <div className="chart">
+                    <div className="chart tall">
                       <ResponsiveContainer debounce={150}>
                         <ScatterChart margin={{ top: 8, right: 16, left: -10, bottom: 0 }}>
                           <CartesianGrid stroke={C.grid} />
@@ -677,36 +609,12 @@ export default function Dashboard() {
                       {COLLEGES.map((c) => <span key={c.code}><i style={{ background: CCOL[c.code] }} />{c.name}</span>)}
                       <em>Correlation is not causation.</em>
                     </div>
+                    <div className="detail">
+                      {sel ? <><b>{sel.code} {sel.title}</b> ({sel.dept}): {sel.enrolled} enrolled, pass rate {sel.pass}%, SETE {sel.sete}/5 from {sel.response}% of students{sel.response < THRESH.response && ", low response"}</> : "Select a dot or a table row to see a course's details."}
+                    </div>
                   </>
                 )}
               </Card>
-
-              <Card i={nx()} cls="c4 wide-md" title={f.college === "All" ? "College comparison" : `${f.college} departments`} sub="Five indicators side by side, SETE scaled to 100">
-                <div className="chart">
-                  <ResponsiveContainer debounce={150}>
-                    <RadarChart outerRadius="72%" data={[
-                      { m: "Pass", ...Object.fromEntries(cmp.map((c) => [c.id, c.pass])) },
-                      { m: "Fill", ...Object.fromEntries(cmp.map((c) => [c.id, c.fill])) },
-                      { m: "SETE", ...Object.fromEntries(cmp.map((c) => [c.id, c.sete * 20])) },
-                      { m: "Response", ...Object.fromEntries(cmp.map((c) => [c.id, c.response])) },
-                      { m: "Low risk", ...Object.fromEntries(cmp.map((c) => [c.id, 100 - c.atRisk])) },
-                    ]}>
-                      <PolarGrid stroke={C.grid} />
-                      <PolarAngleAxis dataKey="m" tick={{ fontSize: 12, fill: C.ink2 }} />
-                      <PolarRadiusAxis domain={[40, 100]} tick={false} axisLine={false} />
-                      {cmp.map((x, k) => {
-                        const on = f.dept === "All" || f.dept === x.id;
-                        const col = CCOL[x.id] ?? SLOTS[k % 3];
-                        return <Radar key={x.id} name={x.id} dataKey={x.id} stroke={col} strokeWidth={2} fill={col} fillOpacity={on ? 0.1 : 0.02} strokeOpacity={on ? 1 : 0.3} {...A} />;
-                      })}
-                      <Legend iconType="circle" iconSize={9} wrapperStyle={{ fontSize: 12 }} formatter={(v: string) => <span style={{ color: "var(--ink-2)" }}>{v}</span>} />
-                      <Tooltip {...TT} />
-                    </RadarChart>
-                  </ResponsiveContainer>
-                </div>
-              </Card>
-
-              <h2 className="sec" style={idx(nx())}>Courses</h2>
 
               <Card i={nx()} cls="c12" title="Course monitoring" sub={`${rows.length} ${rows.length === 1 ? "course" : "courses"}`}
                 right={<input className="search" type="search" placeholder="Search course or department" aria-label="Search courses" value={q} onChange={(e) => setQ(e.target.value)} />}>
@@ -720,7 +628,7 @@ export default function Dashboard() {
                           const lowResp = c.response < THRESH.response;
                           return (
                             <tr key={c.code} className={c.code === pick ? "sel-row" : ""} tabIndex={0} aria-selected={c.code === pick}
-                              onClick={() => setPick(c.code)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPick(c.code); } }}>
+                              onClick={() => setPick(c.code)} onKeyDown={onActivate(() => setPick(c.code))}>
                               <td><b>{c.code}</b><span className="mut">{c.title}</span></td>
                               <td>{c.dept}</td><td>{YLS[c.yl - 1]}</td><td className="num">{c.enrolled}</td>
                               <td className={`num ${c.pass < THRESH.pass ? "neg" : ""}`}>{c.pass}</td>
@@ -744,7 +652,7 @@ export default function Dashboard() {
             </div>
 
             <footer className="foot">
-              Simulated data for the BAT 405 case study. SETE is one input among many and should never be the sole basis for personnel decisions.
+              Simulated data for the BAT 405 case study. SETE is one input among many: triangulate it with grades, peer observation and syllabus review, and never use it as the sole basis for personnel decisions.
             </footer>
           </main>
         </div>

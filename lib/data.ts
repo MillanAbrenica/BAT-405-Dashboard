@@ -203,24 +203,7 @@ export function heat(f: Filters) {
 }
 
 export function byYearLevel(f: Filters) {
-  return YLS.map((y) => {
-    const x = summarize({ ...f, yl: y });
-    return { yl: y, pass: x.pass, atRisk: x.atRisk, sete: x.sete };
-  });
-}
-
-// Approximate grade distribution derived from the pass rate (simulated).
-export function gradeDist(pass: number) {
-  const fail = 100 - pass;
-  const hi = Math.max(0, (pass - 70) * 0.9);
-  const mid = Math.max(0, pass - hi - 12);
-  return [
-    { band: "Excellent (1.0-1.5)", pct: r1(hi * 0.55) },
-    { band: "Good (1.75-2.25)", pct: r1(hi * 0.45 + mid * 0.45) },
-    { band: "Fair (2.5-3.0)", pct: r1(pass - hi - mid * 0.45) },
-    { band: "Incomplete/Dropped", pct: r1(fail * 0.4) },
-    { band: "Failed (5.0)", pct: r1(fail * 0.6) },
-  ];
+  return YLS.map((y) => ({ yl: y as string, ...summarize({ ...f, yl: y }) }));
 }
 
 // Recurring improvement themes (simulated, from aggregated SETE comments), scaled to the selected scope.

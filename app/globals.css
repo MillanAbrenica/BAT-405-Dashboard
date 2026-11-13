@@ -6,7 +6,7 @@
   --font:var(--font-archivo),system-ui,"Segoe UI",sans-serif;
   --paper:#eceff4;--sheet:#ffffff;--sheet-2:#f4f6f9;--field:#f4f6f9;--rule:#dde2ea;--grid:#e8ecf1;--axis:#c3cad6;
   --ink:#16203a;--ink-2:#47536e;--mute:#76819a;
-  --brand:#3354c4;--brand-2:#7f95dd;--brand-3:#1f3a99;--brand-wash:#eef1fb;--logo:#3354c4;
+  --brand:#3354c4;--brand-wash:#eef1fb;--logo:#3354c4;
   /* categorical slots (CCS, CBA, CED) — validated all-pairs for colour-vision deficiency */
   --s1:#3354c4;--s2:#c2418a;--s3:#27b08f;
   --bad:#c8322b;--bad-ink:#a3241e;--bad-wash:#fcefed;
@@ -21,7 +21,7 @@
   color-scheme:dark;
   --paper:#0b101b;--sheet:#131a28;--sheet-2:#192131;--field:#1a2232;--rule:#232d40;--grid:#1e2737;--axis:#34405a;
   --ink:#e5e9f2;--ink-2:#a9b3c7;--mute:#7b879f;
-  --brand:#5878e8;--brand-2:#3a4f97;--brand-3:#9bb0f7;--brand-wash:#1a2340;--logo:#4362d6;
+  --brand:#5878e8;--brand-wash:#1a2340;--logo:#4362d6;
   --s1:#5878e8;--s2:#bf4387;--s3:#27ab8a;
   --bad:#ec645c;--bad-ink:#f39a93;--bad-wash:#2b1a20;
   --warn:#e0a53a;--warn-ink:#ecc276;--warn-wash:#2a2417;
@@ -89,7 +89,8 @@ button,input,select{font:inherit}
 .icon-btn:active{transform:scale(.97)}
 .icon-btn svg{width:18px;height:18px}
 .icon-swap{display:grid;animation:icon-in .2s var(--ease-out)}
-.pill{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:99px;background:var(--sheet);border:1px solid var(--rule);font-size:13px;color:var(--ink-2);white-space:nowrap}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:6px 12px;border-radius:99px;background:var(--sheet);border:1px solid var(--rule);font-size:13px;color:var(--ink-2);white-space:nowrap;cursor:pointer;transition:border-color .15s ease,transform .12s var(--ease-out)}
+.pill:active{transform:scale(.97)}
 .pill::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--bad)}
 .pill b{font-weight:600;color:var(--bad-ink)}
 .pill.ok::before{background:var(--good)}
@@ -144,16 +145,17 @@ button,input,select{font:inherit}
 
 /* ---------- Grid + panels ---------- */
 .grid{container-type:inline-size;display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px}
-.c4{grid-column:span 4}.c8{grid-column:span 8}.c12{grid-column:1/-1}
+.c4{grid-column:span 4}.c6{grid-column:span 6}.c8{grid-column:span 8}.c12{grid-column:1/-1}
 @container (max-width:980px){.c4{grid-column:span 6}.c8,.wide-md{grid-column:1/-1}}
-@container (max-width:620px){.c4,.c8{grid-column:1/-1}}
+@container (max-width:620px){.c4,.c6,.c8{grid-column:1/-1}}
 .sec{grid-column:1/-1;display:flex;align-items:center;gap:14px;margin-top:14px;font-size:17px;font-weight:600;font-stretch:112%;letter-spacing:-.01em}
 .sec::after{content:"";flex:1;height:1px;background:var(--rule)}
-.card{background:var(--sheet);border:1px solid var(--rule);border-radius:10px;padding:16px 18px;display:flex;flex-direction:column;min-width:0}
+.card{background:var(--sheet);border:1px solid var(--rule);border-radius:10px;padding:16px 18px;display:flex;flex-direction:column;min-width:0;scroll-margin-top:16px}
 .card-h{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:12px}
 .card h3{font-size:14.5px;font-weight:600}
 .card-h p{font-size:12.5px;color:var(--mute);margin-top:2px}
 .chart{flex:1;min-height:clamp(220px,25vh,300px);overflow:hidden}
+.chart.tall{min-height:clamp(260px,32vh,360px)}
 .note{font-size:12.5px;color:var(--ink-2);margin-top:10px}
 .detail{font-size:12.5px;color:var(--ink-2);background:var(--sheet-2);border-radius:6px;padding:8px 10px;margin-top:10px}
 .detail b{color:var(--ink);font-weight:600}
@@ -179,6 +181,19 @@ button,input,select{font:inherit}
 .alerts li.bad::before{background:var(--bad)}.alerts li.bad b{color:var(--bad-ink)}
 .alerts li.warn::before{background:var(--warn)}.alerts li.warn b{color:var(--warn-ink)}
 .count{font-size:12px;font-weight:600;color:var(--ink-2);background:var(--sheet-2);border:1px solid var(--rule);border-radius:99px;padding:1px 9px;font-variant-numeric:tabular-nums}
+
+/* comparison table: the KPI columns per group; rows stretch to share the card's height */
+.score{flex:1;display:flex;margin:0 -18px -16px;border-top:1px solid var(--rule);overflow-x:auto}
+.score table{height:100%}
+.score th,.score td{padding:9px 8px}
+.score th{font-size:12px}
+.score th:first-child,.score td:first-child{padding-left:18px}.score th:last-child,.score td:last-child{padding-right:18px}
+.score tbody tr{cursor:pointer}
+.score tbody tr:last-child td{border-bottom:0}
+.score td:first-child{font-weight:600}
+.sw{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:8px}
+.v-warn{color:var(--warn-ink);font-weight:600;background:var(--warn-wash)}
+.v-bad{color:var(--bad-ink);font-weight:600;background:var(--bad-wash)}
 
 /* improvement themes */
 .bars{list-style:none;display:flex;flex-direction:column;gap:14px;flex:1;justify-content:center}
@@ -228,7 +243,7 @@ tr.sel-row td:first-child{box-shadow:inset 3px 0 0 var(--brand)}
 
 /* hover only where a real pointer exists, so taps don't leave sticky states */
 @media(hover:hover) and (pointer:fine){
-  .icon-btn:hover{border-color:var(--axis)}
+  .icon-btn:hover,.pill:hover{border-color:var(--axis)}
   .reset:hover{background:var(--sheet-2)}
   .chip button:hover{background:var(--sheet-2);color:var(--ink)}
   .seg button:not(.on):hover{color:var(--ink)}
